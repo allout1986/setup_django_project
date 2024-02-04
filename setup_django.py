@@ -1,3 +1,4 @@
+#!/usr/bin/python3
 import subprocess
 import re
 import secrets
@@ -24,6 +25,7 @@ class PackageManager:
                 "redis",
                 "django-auth-ldap",
                 "django-rest-framework",
+                "drf-yasg",
             ]
         )
 
@@ -252,7 +254,8 @@ LOGGING = {
             original_content = file.read()
 
         # Add 'rest_framework' to INSTALLED_APPS
-        new_content = re.sub(r"(INSTALLED_APPS = \[)(.*?)(\])", r"\1\2    'rest_framework',    'rest_framework.authtoken'\3", original_content, flags=re.DOTALL)
+        new_content = re.sub(r"(INSTALLED_APPS = \[)(.*?)(\])", r"\1\2    'rest_framework',\n\3", original_content, flags=re.DOTALL)
+        new_content = re.sub(r"(INSTALLED_APPS = \[)(.*?)(\])", r"\1\2    'rest_framework.authtoken',\n\3", new_content, flags=re.DOTALL)
 
         # Add REST_FRAMEWORK settings
         rest_framework_config = """
@@ -272,14 +275,55 @@ REST_FRAMEWORK = {
         with open(settings_path, 'w') as file:
             file.write(new_content)
 
+    @staticmethod
+    def add_swagger_settings(project_name):
+        settings_path = f"{project_name}/{project_name}/settings.py"
+        with open(settings_path, 'r') as file:
+            original_content = file.read()
+
+        # Add 'drf_yasg' to INSTALLED_APPS
+        new_content = re.sub(r"(INSTALLED_APPS = \[)(.*?)(\])", r"\1\2    'drf_yasg',\n\3", original_content, flags=re.DOTALL)
+
+        # Add REST_FRAMEWORK settings
+        swagger_config = """
+# Swagger settings
+SWAGGER_SETTINGS = {
+    'SECURITY_DEFINITIONS': {
+        'basic': {
+            'type': 'basic'
+        }
+    },
+}
+"""
+        new_content += swagger_config
+
+        with open(settings_path, 'w') as file:
+            file.write(new_content)
+
 class DjangoURLsConfigurer:
     @staticmethod
     def configure_urls(project_name):
         urls_path = f"{project_name}/{project_name}/urls.py"
         new_urls_file = """from django.contrib import admin
-from django.urls import path, include
+from django.urls import include, path, re_path
+from drf_yasg import openapi
+from drf_yasg.views import get_schema_view
+from rest_framework import permissions
 from rest_framework.authtoken import views
 from rest_framework.routers import DefaultRouter
+
+schema_view = get_schema_view(
+   openapi.Info(
+      title="Your Project API",
+      default_version='v1',
+      description="API documentation for your project",
+      terms_of_service="https://www.yourproject.com/policies/terms/",
+      contact=openapi.Contact(email="contact@yourproject.local"),
+      license=openapi.License(name="Your Project License"),
+   ),
+   public=True,
+   permission_classes=(permissions.AllowAny,),
+)
 
 router = DefaultRouter()
 
@@ -288,6 +332,9 @@ urlpatterns = [
     path('api-auth/', include('rest_framework.urls', namespace='rest_framework')),
     path('api-token-auth/', views.obtain_auth_token, name='api-token-auth'),
     path('api/', include(router.urls)),
+    re_path(r'^swagger(?P<format>\.json|\.yaml)$', schema_view.without_ui(cache_timeout=0), name='schema-json'),
+    path('swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
+    path('redoc/', schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),
 ]
 """
 
@@ -426,6 +473,7 @@ if __name__ == "__main__":
     SettingsConfigurer.configure_database_settings(project_name)
     SettingsConfigurer.configure_logging(project_name)
     SettingsConfigurer.add_django_rest_framework_settings(project_name)
+    SettingsConfigurer.add_swagger_settings(project_name)
     SettingsConfigurer.add_ldap_configuration(project_name)
     DjangoURLsConfigurer.configure_urls(project_name)
     CeleryConfigurer.configure_celery(project_name)
