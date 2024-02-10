@@ -1,7 +1,8 @@
 #!/usr/bin/python3
-import subprocess
+import os
 import re
 import secrets
+import subprocess
 import sys
 
 
@@ -22,6 +23,8 @@ class PackageManager:
                 "gunicorn",
                 "psycopg2-binary",
                 "celery",
+                "django_celery_results",
+                "django-celery-beat",
                 "redis",
                 "django-auth-ldap",
                 "django-rest-framework",
@@ -46,23 +49,37 @@ class EnvFileGenerator:
     def generate_env_files(project_name):
         # Updated environment content with database configuration variables
         env_content = {
-            "development": """
+            "development": f"""# Base environment variables
+WEB_HOST={project_name}_web
+CELERY_HOST={project_name}_celery
+BEAT_HOST={project_name}_beat
+REDIS_HOST={project_name}_redis
+DB_HOST={project_name}_db
 ALLOWED_HOSTS=*
 SECRET_KEY=your_secret_key_development
 DEBUG=True
-
+DJANGO_SUPERUSER_USERNAME=admin
+DJANGO_SUPERUSER_PASSWORD=admin
+DJANGO_SUPERUSER_EMAIL=admin@email.com
 """,
-            "production": """
+            "production": f"""# Base environment variables
+WEB_HOST={project_name}_web
+CELERY_HOST={project_name}_celery
+BEAT_HOST={project_name}_beat
+REDIS_HOST={project_name}_redis
+DB_HOST={project_name}_db
 ALLOWED_HOSTS=*
 SECRET_KEY=your_secret_key_production
 DEBUG=False
-
+DJANGO_SUPERUSER_USERNAME=admin
+DJANGO_SUPERUSER_PASSWORD=admin
+DJANGO_SUPERUSER_EMAIL=admin@email.com
 """,
         }
 
         for env, content in env_content.items():
             with open(f"{project_name}/.env.{env}", "w") as env_file:
-                env_file.write(content.strip())
+                env_file.write(content)
 
     @staticmethod
     def add_celery_env_variables(project_name):
@@ -91,7 +108,6 @@ POSTGRES_PASSWORD=your_db_password
 DB_NAME=$POSTGRES_DB
 DB_USER=$POSTGRES_USER
 DB_PASSWORD=$POSTGRES_PASSWORD
-DB_HOST=localhost
 DB_PORT=5432
 """
         env_files = [
@@ -182,6 +198,27 @@ class SettingsConfigurer:
             file.write(new_content)
 
     @staticmethod
+    def add_static_root(project_name):
+        settings_path = f"{project_name}/{project_name}/settings.py"
+        with open(settings_path, "r") as file:
+            lines = file.readlines()
+
+        # Check if STATIC_ROOT already exists
+        if any("STATIC_ROOT" in line for line in lines):
+            return
+
+        # Find the line with STATIC_URL
+        for i, line in enumerate(lines):
+            if line.strip().startswith("STATIC_URL"):
+                # Insert the STATIC_ROOT configuration after this line
+                lines.insert(i + 1, f'STATIC_ROOT = os.path.join(BASE_DIR, "static")\n')
+                break
+
+        # Write the file back out
+        with open(settings_path, "w") as file:
+            file.writelines(lines)
+
+    @staticmethod
     def add_ldap_configuration(project_name):
         settings_path = f"{project_name}/{project_name}/settings.py"
         ldap_settings = """
@@ -250,12 +287,22 @@ LOGGING = {
     @staticmethod
     def add_django_rest_framework_settings(project_name):
         settings_path = f"{project_name}/{project_name}/settings.py"
-        with open(settings_path, 'r') as file:
+        with open(settings_path, "r") as file:
             original_content = file.read()
 
         # Add 'rest_framework' to INSTALLED_APPS
-        new_content = re.sub(r"(INSTALLED_APPS = \[)(.*?)(\])", r"\1\2    'rest_framework',\n\3", original_content, flags=re.DOTALL)
-        new_content = re.sub(r"(INSTALLED_APPS = \[)(.*?)(\])", r"\1\2    'rest_framework.authtoken',\n\3", new_content, flags=re.DOTALL)
+        new_content = re.sub(
+            r"(INSTALLED_APPS = \[)(.*?)(\])",
+            r"\1\2    'rest_framework',\n\3",
+            original_content,
+            flags=re.DOTALL,
+        )
+        new_content = re.sub(
+            r"(INSTALLED_APPS = \[)(.*?)(\])",
+            r"\1\2    'rest_framework.authtoken',\n\3",
+            new_content,
+            flags=re.DOTALL,
+        )
 
         # Add REST_FRAMEWORK settings
         rest_framework_config = """
@@ -272,17 +319,22 @@ REST_FRAMEWORK = {
 """
         new_content += rest_framework_config
 
-        with open(settings_path, 'w') as file:
+        with open(settings_path, "w") as file:
             file.write(new_content)
 
     @staticmethod
     def add_swagger_settings(project_name):
         settings_path = f"{project_name}/{project_name}/settings.py"
-        with open(settings_path, 'r') as file:
+        with open(settings_path, "r") as file:
             original_content = file.read()
 
         # Add 'drf_yasg' to INSTALLED_APPS
-        new_content = re.sub(r"(INSTALLED_APPS = \[)(.*?)(\])", r"\1\2    'drf_yasg',\n\3", original_content, flags=re.DOTALL)
+        new_content = re.sub(
+            r"(INSTALLED_APPS = \[)(.*?)(\])",
+            r"\1\2    'drf_yasg',\n\3",
+            original_content,
+            flags=re.DOTALL,
+        )
 
         # Add REST_FRAMEWORK settings
         swagger_config = """
@@ -297,8 +349,9 @@ SWAGGER_SETTINGS = {
 """
         new_content += swagger_config
 
-        with open(settings_path, 'w') as file:
+        with open(settings_path, "w") as file:
             file.write(new_content)
+
 
 class DjangoURLsConfigurer:
     @staticmethod
@@ -338,7 +391,7 @@ urlpatterns = [
 ]
 """
 
-        with open(urls_path, 'w') as file:
+        with open(urls_path, "w") as file:
             file.write(new_urls_file)
 
 
@@ -347,17 +400,45 @@ class CeleryConfigurer:
     def configure_celery(project_name):
         # Update settings.py to use environment variables for Celery configuration
         settings_path = f"{project_name}/{project_name}/settings.py"
-        with open(settings_path, "a") as settings_file:
-            settings_file.write("\n# Celery Configuration\n")
-            settings_file.write(
-                "CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://localhost:6379/0')\n"
-            )
-            settings_file.write(
-                "CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://localhost:6379/0')\n"
-            )
-            settings_file.write("CELERY_ACCEPT_CONTENT = ['application/json']\n")
-            settings_file.write("CELERY_TASK_SERIALIZER = 'json'\n")
-            settings_file.write("CELERY_RESULT_SERIALIZER = 'json'\n")
+        with open(settings_path, "r") as file:
+            original_content = file.read()
+
+        new_content = re.sub(
+            r"(INSTALLED_APPS = \[)(.*?)(\])",
+            r"\1\2    'django_celery_beat',\n\3",
+            original_content,
+            flags=re.DOTALL,
+        )
+        new_content = re.sub(
+            r"(INSTALLED_APPS = \[)(.*?)(\])",
+            r"\1\2    'django_celery_results',\n\3",
+            new_content,
+            flags=re.DOTALL,
+        )
+
+        celery_settings_config = """# Celery Configuration
+CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://localhost:6379/0')
+CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://localhost:6379/0')
+CELERY_ACCEPT_CONTENT = ['application/json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
+
+# Cache Configuration
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+        'LOCATION': os.environ.get(CELERY_BROKER_URL, 'redis://localhost:6379/0'),
+        'OPTIONS': {
+            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+        }
+    }
+}
+"""
+        new_content += celery_settings_config
+
+        with open(settings_path, "w") as file:
+            file.write(new_content)
 
         # Create celery.py in the project directory
         celery_config = f"""from __future__ import absolute_import, unicode_literals
@@ -377,70 +458,217 @@ app.autodiscover_tasks()
         # Update __init__.py to import the Celery app
         init_path = f"{project_name}/{project_name}/__init__.py"
         with open(init_path, "a") as init_file:
-            init_file.write(f"from .celery import app as celery_app\n")
+            init_file.write(f"from .celery import app as celery_app\n\n")
+            init_file.write("__all__ = ['celery_app']\n")
 
 
 class DockerfileGenerator:
     @staticmethod
-    def generate_docker_files(project_name):
+    def generate_dockerfile(project_name):
         # Updated Dockerfile to use Python 3.12.1-slim-bullseye
         dockerfile_content = f"""FROM python:3.12.1-slim-bullseye
 ENV PYTHONUNBUFFERED 1
 
 # Install LDAP dependencies
-RUN apt-get update && apt-get install -y gcc libldap2-dev libsasl2-dev ldap-utils && apt-get clean
+RUN apt-get update && apt-get install -y gcc libldap2-dev libsasl2-dev ldap-utils postgresql-client netcat && apt-get clean
 
 RUN mkdir /code
 WORKDIR /code
 COPY . /code/
 RUN pip install -r requirements.txt
+
+# Add and give execution permissions to the entrypoint script
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Add and give execution permissions to the start scripts
+COPY ./startscripts/* /startscripts/
+RUN chmod +x /startscripts/*.sh
+
+# Add static files directory
+RUN mkdir static
+
+ENTRYPOINT ["/entrypoint.sh"]
+EXPOSE 8000
 """
         # Adjust file paths as needed to ensure Docker context is set correctly
         with open(f"{project_name}/Dockerfile", "w") as dockerfile:
             dockerfile.write(dockerfile_content)
 
+    @staticmethod
+    def generate_entrypoint(project_name):
+        entrypoint_content = f"""#!/bin/bash
+
+set -e
+
+while ! nc -z $DB_HOST $DB_PORT; do
+  >&2 echo "Postgres is unavailable - sleeping"
+  sleep 1
+done
+
+>&2 echo "Postgres is up - executing command"
+exec "$@"
+"""
+        # Adjust file paths as needed to ensure Docker context is set correctly
+        with open(f"{project_name}/entrypoint.sh", "w") as entrypoint_file:
+            entrypoint_file.write(entrypoint_content)
+
+    @staticmethod
+    def generate_startscripts(project_name):
+        os.makedirs(f"{project_name}/startscripts", exist_ok=True)
+        DockerfileGenerator.generate_startscript_web(project_name)
+        DockerfileGenerator.generate_startscript_createsuperuser_web(project_name)
+        DockerfileGenerator.generate_startscript_celery(project_name)
+        DockerfileGenerator.generate_startscript_celery_beat(project_name)
+
+    @staticmethod
+    def generate_startscript_createsuperuser_web(project_name):
+        createsuperuser_script_content = f"""from django.contrib.auth.models import User
+from django.db.utils import IntegrityError
+import os
+
+try:
+    User.objects.create_superuser(os.getenv('DJANGO_SUPERUSER_USERNAME'), os.getenv('DJANGO_SUPERUSER_EMAIL'), os.getenv('DJANGO_SUPERUSER_PASSWORD'))
+except IntegrityError:
+    pass
+except Exception as e:
+    print("An error occurred:", e)
+"""
+
+        with open(
+            f"{project_name}/startscripts/createsuperuser_web.py", "w"
+        ) as createsuperuser_web_file:
+            createsuperuser_web_file.write(createsuperuser_script_content)
+
+    @staticmethod
+    def generate_startscript_web(project_name):
+        startscript_content = f"""#!/bin/bash
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+# Synchronize the database with the current set of models and migrations
+python manage.py makemigrations --noinput
+python manage.py migrate --noinput
+
+# Collect static files
+python manage.py collectstatic --noinput
+
+# Execute script to create users and add permissions
+python manage.py shell < /startscripts/createsuperuser_web.py
+
+# Import fixtures (if available)
+
+# Start Django
+# gunicorn --bind 0.0.0.0:8000 --workers 4 --max-requests 20 {project_name}.wsgi:application
+python manage.py runserver 0.0.0.0:8000
+
+"""
+
+        with open(
+            f"{project_name}/startscripts/startscript_web.sh", "w"
+        ) as startscript_web_file:
+            startscript_web_file.write(startscript_content)
+
+    @staticmethod
+    def generate_startscript_celery(project_name):
+        startscript_content = f"""#!/bin/bash
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+echo "Waiting for Django..."
+
+while ! nc -z $WEB_HOST 8000; do
+    sleep 1
+done
+
+echo "Django started"
+
+celery -A {project_name} worker --loglevel=info
+"""
+
+        with open(
+            f"{project_name}/startscripts/startscript_celery.sh", "w"
+        ) as startscript_celery_file:
+            startscript_celery_file.write(startscript_content)
+
+    @staticmethod
+    def generate_startscript_celery_beat(project_name):
+        startscript_content = f"""#!/bin/bash
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+echo "Waiting for Django..."
+
+while ! nc -z $WEB_HOST 8000; do
+    sleep 1
+done
+
+echo "Django started"
+
+rm -f './celerybeat.pid'
+celery -A {project_name} beat --loglevel=info --scheduler django_celery_beat.schedulers:DatabaseScheduler --pidfile=
+"""
+
+        with open(
+            f"{project_name}/startscripts/startscript_celery_beat.sh", "w"
+        ) as startscript_celery_beat_file:
+            startscript_celery_beat_file.write(startscript_content)
+
+    @staticmethod
+    def generate_docker_compose(project_name):
         # docker-compose.yml with environment variables
         docker_compose_content = f"""version: '3'
 
 services:
-  db:
-    image: postgres
-    env_file:
-      - .env.production
-  redis:
-    image: "redis:alpine"
-  web:
-    build: .
-    command: python manage.py runserver 0.0.0.0:8000
-    volumes:
-      - .:/{project_name}
-    ports:
-      - "8000:8000"
-    env_file:
-      - .env.production
-    depends_on:
-      - db
-      - redis
-  celery:
-    build: .
-    command: celery -A {project_name} worker --loglevel=info
-    volumes:
-      - .:/{project_name}
-    env_file:
-      - .env.production
-    depends_on:
-      - db
-      - redis
-  beat:
-    build: .
-    command: celery -A {project_name} beat --loglevel=info
-    volumes:
-      - .:/{project_name}
-    env_file:
-      - .env.production
-    depends_on:
-      - db
-      - redis
+    db:
+        container_name: {project_name}_db
+        image: postgres
+        env_file:
+            - .env.production
+    redis:
+        container_name: {project_name}_redis
+        image: "redis:alpine"
+    web:
+        container_name: {project_name}_web
+        build: .
+        command: /startscripts/startscript_web.sh
+        volumes:
+            - .:/{project_name}
+        ports:
+            - "8000:8000"
+        env_file:
+            - .env.production
+        depends_on:
+            - db
+            - redis
+    celery:
+        container_name: {project_name}_celery
+        build: .
+        command: /startscripts/startscript_celery.sh
+        volumes:
+            - .:/{project_name}
+        env_file:
+            - .env.production
+        depends_on:
+            - db
+            - redis
+    beat:
+        container_name: {project_name}_beat
+        build: .
+        command: /startscripts/startscript_celery_beat.sh
+        volumes:
+            - .:/{project_name}
+        env_file:
+            - .env.production
+        depends_on:
+            - db
+            - redis
 """
         with open(f"{project_name}/docker-compose.yml", "w") as docker_compose:
             docker_compose.write(docker_compose_content)
@@ -470,6 +698,7 @@ if __name__ == "__main__":
     PackageManager.install_packages()
     DjangoProjectCreator.create_project(project_name)
     SettingsConfigurer.configure_basic_settings(project_name)
+    SettingsConfigurer.add_static_root(project_name)
     SettingsConfigurer.configure_database_settings(project_name)
     SettingsConfigurer.configure_logging(project_name)
     SettingsConfigurer.add_django_rest_framework_settings(project_name)
@@ -477,7 +706,10 @@ if __name__ == "__main__":
     SettingsConfigurer.add_ldap_configuration(project_name)
     DjangoURLsConfigurer.configure_urls(project_name)
     CeleryConfigurer.configure_celery(project_name)
-    DockerfileGenerator.generate_docker_files(project_name)
+    DockerfileGenerator.generate_dockerfile(project_name)
+    DockerfileGenerator.generate_entrypoint(project_name)
+    DockerfileGenerator.generate_startscripts(project_name)
+    DockerfileGenerator.generate_docker_compose(project_name)
     PackageManager.freeze_packages(project_name)
     EnvFileGenerator.generate_env_files(project_name)
     EnvFileGenerator.add_postgres_env_variables(project_name)
