@@ -1,4 +1,5 @@
 #!/usr/bin/python3
+import ipaddress
 import os
 import re
 import secrets
@@ -61,8 +62,8 @@ REDIS_HOST={project_name}_redis
 FLOWER_HOST={project_name}_flower
 DB_HOST={project_name}_db
 ALLOWED_HOSTS=*
-SECRET_KEY=your_secret_key_development
-SIMPLE_JWT_SECRET_KEY=your_secret_key_development
+SECRET_KEY={generate_secret_key()}
+SIMPLE_JWT_SECRET_KEY={generate_secret_key()}
 DEBUG=True
 DJANGO_SUPERUSER_USERNAME=admin
 DJANGO_SUPERUSER_PASSWORD=admin
@@ -76,8 +77,8 @@ REDIS_HOST={project_name}_redis
 FLOWER_HOST={project_name}_flower
 DB_HOST={project_name}_db
 ALLOWED_HOSTS=*
-SECRET_KEY=your_secret_key_production
-SIMPLE_JWT_SECRET_KEY=your_secret_key_production
+SECRET_KEY={generate_secret_key()}
+SIMPLE_JWT_SECRET_KEY={generate_secret_key()}
 DEBUG=False
 DJANGO_SUPERUSER_USERNAME=admin
 DJANGO_SUPERUSER_PASSWORD=admin
@@ -92,9 +93,12 @@ DJANGO_SUPERUSER_EMAIL=admin@email.com
     @staticmethod
     def add_celery_env_variables(project_name):
         celery_env_variables = """
+# REDIS Configuration
+REDIS_PASSWORD=your_redis_password
+
 # CELERY Configuration
-CELERY_BROKER_URL=redis://$REDIS_HOST:6379/0
-CELERY_RESULT_BACKEND=redis://$REDIS_HOST:6379/0
+CELERY_BROKER_URL=redis://:$REDIS_PASSWORD@$REDIS_HOST:6379/0
+CELERY_RESULT_BACKEND=redis://:$REDIS_PASSWORD@$REDIS_HOST:6379/0
 
 # FLOWER Configuration
 FLOWER_BASIC_AUTH=admin:admin
@@ -613,7 +617,7 @@ RUN chmod +x /startscripts/*.sh
 RUN mkdir static
 
 # Update permissions
-RUN chown -R django /code
+RUN chown -R django:django /code
 USER django
 
 # Run entrypoint script
@@ -750,7 +754,7 @@ celery -A {project_name} beat --loglevel=info --scheduler django_celery_beat.sch
             startscript_celery_beat_file.write(startscript_content)
 
     @staticmethod
-    def generate_docker_compose(project_name):
+    def generate_docker_compose(project_name, subnet):
         # docker-compose.yml with environment variables
         docker_compose_content = f"""version: '3'
 
@@ -761,10 +765,20 @@ services:
         image: postgres
         env_file:
             - .env.production
+        networks:
+            - {project_name}_network
+        volumes:
+            - postgres_data:/var/lib/postgresql/data
     redis:
         container_name: {project_name}_redis
         restart: always
-        image: "redis:alpine"
+        image: bitnami/redis:latest
+        env_file:
+            - .env.production
+        networks:
+            - {project_name}_network
+        volumes:
+            - redis_data:/bitnami/redis/data
     web:
         container_name: {project_name}_web
         restart: always
@@ -776,6 +790,8 @@ services:
             - "8000:8000"
         env_file:
             - .env.production
+        networks:
+            - {project_name}_network
         depends_on:
             - db
             - redis
@@ -788,6 +804,8 @@ services:
             - .:/{project_name}
         env_file:
             - .env.production
+        networks:
+            - {project_name}_network
         depends_on:
             - db
             - redis
@@ -800,6 +818,8 @@ services:
             - .:/{project_name}
         env_file:
             - .env.production
+        networks:
+            - {project_name}_network
         depends_on:
             - db
             - redis
@@ -809,10 +829,26 @@ services:
         command: celery flower
         env_file:
             - .env.production
+        networks:
+            - {project_name}_network
         ports:
             - "5555:5555"
+        volumes:
+            - flower_data:/data
         depends_on:
             - redis
+
+networks:
+    {project_name}_network:
+        name: {project_name}
+        ipam:
+            config:
+                - subnet: {subnet}
+
+volumes:
+    postgres_data:
+    redis_data:
+    flower_data:
 """
         with open(f"{project_name}/docker-compose.yml", "w") as docker_compose:
             docker_compose.write(docker_compose_content)
@@ -820,14 +856,14 @@ services:
 
 def generate_secret_key():
     # Django's secret key consists of 50 characters from the given set
-    chars = "abcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*(-_=+)"
+    chars = "abcdefghijklmnopqrstuvwxyz0123456789!@#%^&*(-_=+)"
     return "".join(secrets.choice(chars) for _ in range(50))
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print(
-            "Usage: python script.py <project_name> or python script.py --generate-secret-key"
+            "Usage: python script.py <project_name> <subnet> or python script.py --generate-secret-key"
         )
         sys.exit(1)
 
@@ -836,7 +872,20 @@ if __name__ == "__main__":
         print(f"SECRET_KEY: {secret_key}")
         sys.exit(0)
 
+    if len(sys.argv) < 3:
+        print(
+            "Usage: python script.py <project_name> <subnet>"
+        )
+        sys.exit(1)
+
     project_name = sys.argv[1]
+    subnet = sys.argv[2]
+
+    try:
+        ipaddress.ip_network(subnet)
+    except ValueError:
+        print(f"Invalid subnet: {subnet}")
+        sys.exit(1)
 
     # VirtualEnvManager.create_virtual_env()
     PackageManager.install_packages()
@@ -853,7 +902,7 @@ if __name__ == "__main__":
     DockerfileGenerator.generate_dockerfile(project_name)
     DockerfileGenerator.generate_entrypoint(project_name)
     DockerfileGenerator.generate_startscripts(project_name)
-    DockerfileGenerator.generate_docker_compose(project_name)
+    DockerfileGenerator.generate_docker_compose(project_name, subnet)
     PackageManager.freeze_packages(project_name)
     EnvFileGenerator.generate_env_files(project_name)
     EnvFileGenerator.add_postgres_env_variables(project_name)
