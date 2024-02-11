@@ -29,6 +29,7 @@ class PackageManager:
                 "django-auth-ldap",
                 "django-rest-framework",
                 "drf-yasg",
+                "djangorestframework-simplejwt",
             ]
         )
 
@@ -54,6 +55,7 @@ WEB_HOST={project_name}_web
 CELERY_HOST={project_name}_celery
 BEAT_HOST={project_name}_beat
 REDIS_HOST={project_name}_redis
+FLOWER_HOST={project_name}_flower
 DB_HOST={project_name}_db
 ALLOWED_HOSTS=*
 SECRET_KEY=your_secret_key_development
@@ -67,6 +69,7 @@ WEB_HOST={project_name}_web
 CELERY_HOST={project_name}_celery
 BEAT_HOST={project_name}_beat
 REDIS_HOST={project_name}_redis
+FLOWER_HOST={project_name}_flower
 DB_HOST={project_name}_db
 ALLOWED_HOSTS=*
 SECRET_KEY=your_secret_key_production
@@ -85,8 +88,14 @@ DJANGO_SUPERUSER_EMAIL=admin@email.com
     def add_celery_env_variables(project_name):
         celery_env_variables = """
 # CELERY Configuration
-CELERY_BROKER_URL=redis://your_redis_host:6379/0
-CELERY_RESULT_BACKEND=redis://your_redis_host:6379/0
+CELERY_BROKER_URL=redis://$REDIS_HOST:6379/0
+CELERY_RESULT_BACKEND=redis://$REDIS_HOST:6379/0
+
+# FLOWER Configuration
+FLOWER_BASIC_AUTH=admin:admin
+FLOWER_PERSISTENT=True
+FLOWER_PORT=5555
+FLOWER_URL_PREFIX=flower
 """
         env_files = [
             f"{project_name}/.env.development",
@@ -469,6 +478,9 @@ class DockerfileGenerator:
         dockerfile_content = f"""FROM python:3.12.1-slim-bullseye
 ENV PYTHONUNBUFFERED 1
 
+# Add system user and group
+RUN addgroup --system django && adduser --system --ingroup django django
+
 # Install LDAP dependencies
 RUN apt-get update && apt-get install -y gcc libldap2-dev libsasl2-dev ldap-utils postgresql-client netcat && apt-get clean
 
@@ -488,6 +500,11 @@ RUN chmod +x /startscripts/*.sh
 # Add static files directory
 RUN mkdir static
 
+# Update permissions
+RUN chown -R django /code
+USER django
+
+# Run entrypoint script
 ENTRYPOINT ["/entrypoint.sh"]
 EXPOSE 8000
 """
@@ -587,7 +604,7 @@ done
 
 echo "Django started"
 
-celery -A {project_name} worker --loglevel=info
+celery -A {project_name} worker --hostname={project_name}_worker --loglevel=info
 """
 
         with open(
@@ -628,14 +645,17 @@ celery -A {project_name} beat --loglevel=info --scheduler django_celery_beat.sch
 services:
     db:
         container_name: {project_name}_db
+        restart: always
         image: postgres
         env_file:
             - .env.production
     redis:
         container_name: {project_name}_redis
+        restart: always
         image: "redis:alpine"
     web:
         container_name: {project_name}_web
+        restart: always
         build: .
         command: /startscripts/startscript_web.sh
         volumes:
@@ -649,6 +669,7 @@ services:
             - redis
     celery:
         container_name: {project_name}_celery
+        restart: always
         build: .
         command: /startscripts/startscript_celery.sh
         volumes:
@@ -660,6 +681,7 @@ services:
             - redis
     beat:
         container_name: {project_name}_beat
+        restart: always
         build: .
         command: /startscripts/startscript_celery_beat.sh
         volumes:
@@ -668,6 +690,16 @@ services:
             - .env.production
         depends_on:
             - db
+            - redis
+    flower:
+        container_name: {project_name}_flower
+        image: mher/flower
+        command: celery flower
+        env_file:
+            - .env.production
+        ports:
+            - "5555:5555"
+        depends_on:
             - redis
 """
         with open(f"{project_name}/docker-compose.yml", "w") as docker_compose:
