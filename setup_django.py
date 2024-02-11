@@ -28,8 +28,11 @@ class PackageManager:
                 "redis",
                 "django-auth-ldap",
                 "django-rest-framework",
+                "django-filter",
                 "drf-yasg",
                 "djangorestframework-simplejwt",
+                "djangorestframework-simplejwt[crypto]",
+                "drf-api-logger",
             ]
         )
 
@@ -59,6 +62,7 @@ FLOWER_HOST={project_name}_flower
 DB_HOST={project_name}_db
 ALLOWED_HOSTS=*
 SECRET_KEY=your_secret_key_development
+SIMPLE_JWT_SECRET_KEY=your_secret_key_development
 DEBUG=True
 DJANGO_SUPERUSER_USERNAME=admin
 DJANGO_SUPERUSER_PASSWORD=admin
@@ -73,6 +77,7 @@ FLOWER_HOST={project_name}_flower
 DB_HOST={project_name}_db
 ALLOWED_HOSTS=*
 SECRET_KEY=your_secret_key_production
+SIMPLE_JWT_SECRET_KEY=your_secret_key_production
 DEBUG=False
 DJANGO_SUPERUSER_USERNAME=admin
 DJANGO_SUPERUSER_PASSWORD=admin
@@ -299,6 +304,10 @@ LOGGING = {
         with open(settings_path, "r") as file:
             original_content = file.read()
 
+        # Ensure 'from datetime import timedelta' is present
+        if "from datetime import timedelta" not in original_content:
+            original_content = "from datetime import timedelta\n" + original_content
+
         # Add 'rest_framework' to INSTALLED_APPS
         new_content = re.sub(
             r"(INSTALLED_APPS = \[)(.*?)(\])",
@@ -312,19 +321,105 @@ LOGGING = {
             new_content,
             flags=re.DOTALL,
         )
+        new_content = re.sub(
+            r"(INSTALLED_APPS = \[)(.*?)(\])",
+            r"\1\2    'rest_framework_simplejwt',\n\3",
+            new_content,
+            flags=re.DOTALL,
+        )
+        new_content = re.sub(
+            r"(INSTALLED_APPS = \[)(.*?)(\])",
+            r"\1\2    'django_filters',\n\3",
+            new_content,
+            flags=re.DOTALL,
+        )
+        new_content = re.sub(
+            r"(INSTALLED_APPS = \[)(.*?)(\])",
+            r"\1\2    'drf_api_logger',\n\3",
+            new_content,
+            flags=re.DOTALL,
+        )
+        new_content = re.sub(
+            r"(MIDDLEWARE = \[)(.*?)(\])",
+            r"\1\2    'drf_api_logger.middleware.api_logger_middleware.APILoggerMiddleware',\n\3",
+            new_content,
+            flags=re.DOTALL,
+        )
 
         # Add REST_FRAMEWORK settings
         rest_framework_config = """
 # Rest Framework Configuration
 REST_FRAMEWORK = {
+    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    'PAGE_SIZE': 20,
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.DjangoModelPermissionsOrAnonReadOnly'
     ],
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.SessionAuthentication',
-        'rest_framework.authentication.BasicAuthentication'
+        'rest_framework.authentication.BasicAuthentication',
+        # Package: djangorestframework-simplejwt
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
     ],
+    'DEFAULT_FILTER_BACKENDS': [
+        'django_filters.rest_framework.DjangoFilterBackend',
+    ],
+    'URL_FIELD_NAME': 'url',
 }
+
+# Simple JWT Settings
+# https://django-rest-framework-simplejwt.readthedocs.io/en/latest/settings.html
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=5),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
+    "ROTATE_REFRESH_TOKENS": False,
+    "BLACKLIST_AFTER_ROTATION": False,
+    "UPDATE_LAST_LOGIN": False,
+
+    "ALGORITHM": "HS256",
+    "SIGNING_KEY": os.environ.get("SIMPLE_JWT_SECRET_KEY"),
+    "VERIFYING_KEY": "",
+    "AUDIENCE": None,
+    "ISSUER": None,
+    "JSON_ENCODER": None,
+    "JWK_URL": None,
+    "LEEWAY": 0,
+
+    "AUTH_HEADER_TYPES": ("Bearer", "JWT", "Token"),
+    "AUTH_HEADER_NAME": "HTTP_AUTHORIZATION",
+    "USER_ID_FIELD": "id",
+    "USER_ID_CLAIM": "user_id",
+    "USER_AUTHENTICATION_RULE": "rest_framework_simplejwt.authentication.default_user_authentication_rule",
+
+    "AUTH_TOKEN_CLASSES": ("rest_framework_simplejwt.tokens.AccessToken",),
+    "TOKEN_TYPE_CLAIM": "token_type",
+    "TOKEN_USER_CLASS": "rest_framework_simplejwt.models.TokenUser",
+
+    "JTI_CLAIM": "jti",
+
+    "SLIDING_TOKEN_REFRESH_EXP_CLAIM": "refresh_exp",
+    "SLIDING_TOKEN_LIFETIME": timedelta(minutes=5),
+    "SLIDING_TOKEN_REFRESH_LIFETIME": timedelta(days=1),
+
+    "TOKEN_OBTAIN_SERIALIZER": "rest_framework_simplejwt.serializers.TokenObtainPairSerializer",
+    "TOKEN_REFRESH_SERIALIZER": "rest_framework_simplejwt.serializers.TokenRefreshSerializer",
+    "TOKEN_VERIFY_SERIALIZER": "rest_framework_simplejwt.serializers.TokenVerifySerializer",
+    "TOKEN_BLACKLIST_SERIALIZER": "rest_framework_simplejwt.serializers.TokenBlacklistSerializer",
+    "SLIDING_TOKEN_OBTAIN_SERIALIZER": "rest_framework_simplejwt.serializers.TokenObtainSlidingSerializer",
+    "SLIDING_TOKEN_REFRESH_SERIALIZER": "rest_framework_simplejwt.serializers.TokenRefreshSlidingSerializer",
+}
+
+
+# Django Rest Framework Logging
+# https://pypi.org/project/drf-api-logger/
+DRF_API_LOGGER_DATABASE = True
+DRF_API_LOGGER_EXCLUDE_KEYS = [
+    'password',
+    'token',
+    'access',
+    'refresh',
+    'AUTHORIZATION',
+]
 """
         new_content += rest_framework_config
 
@@ -352,8 +447,17 @@ SWAGGER_SETTINGS = {
     'SECURITY_DEFINITIONS': {
         'basic': {
             'type': 'basic'
-        }
+        },
+        'Bearer': {
+            'type': 'apiKey',
+            'name': 'Authorization',
+            'in': 'header',
+        },
     },
+    'SHOW_REQUEST_HEADERS': True,
+    'APIS_SORTER': 'alpha',
+    'LOGIN_URL': 'rest_framework:login',
+    'LOGOUT_URL': 'rest_framework:logout',
 }
 """
         new_content += swagger_config
@@ -373,6 +477,11 @@ from drf_yasg.views import get_schema_view
 from rest_framework import permissions
 from rest_framework.authtoken import views
 from rest_framework.routers import DefaultRouter
+from rest_framework_simplejwt.views import (
+    TokenObtainPairView,
+    TokenRefreshView,
+    TokenVerifyView,
+)
 
 schema_view = get_schema_view(
    openapi.Info(
@@ -393,6 +502,9 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path('api-auth/', include('rest_framework.urls', namespace='rest_framework')),
     path('api-token-auth/', views.obtain_auth_token, name='api-token-auth'),
+    path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
+    path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('api/token/verify/', TokenVerifyView.as_view(), name='token_verify'),
     path('api/', include(router.urls)),
     re_path(r'^swagger(?P<format>\.json|\.yaml)$', schema_view.without_ui(cache_timeout=0), name='schema-json'),
     path('swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
